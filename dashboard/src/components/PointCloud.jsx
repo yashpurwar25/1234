@@ -1,95 +1,51 @@
-import { GizmoHelper, GizmoViewport, OrbitControls, PerspectiveCamera } from '@react-three/drei'
 import { Canvas } from '@react-three/fiber'
-import { useEffect, useMemo, useRef } from 'react'
-import { colorForClass, hexToRgb } from '../palette'
+import { useLayoutEffect, useMemo, useRef } from 'react'
+import { Color } from 'three'
+import { colorForClass, layerColor } from '../palette'
+import { inView } from '../scene'
+import SceneCamera from './SceneCamera'
+import EgoVehicle from './EgoVehicle'
+import CaptureView from './CaptureView'
 
-function Cloud({ interleaved, hiddenClasses }) {
+function roundPoints(shader) {
+  shader.fragmentShader = shader.fragmentShader.replace('#include <alphatest_fragment>',
+    'if (distance(gl_PointCoord, vec2(0.5)) > 0.5) discard;\n#include <alphatest_fragment>')
+}
+
+function Cloud({ points, hiddenClasses, mode, view, pointSize }) {
+  const geometry = useRef()
   const { positions, colors } = useMemo(() => {
-    const visibleCount = Array.from({ length: interleaved.length / 4 }, (_, index) => index)
-      .filter((index) => !hiddenClasses.has(Math.round(interleaved[index * 4 + 3]))).length
-    const nextPositions = new Float32Array(visibleCount * 3)
-    const nextColors = new Float32Array(visibleCount * 3)
-    let visibleIndex = 0
-    for (let index = 0; index < interleaved.length / 4; index += 1) {
-      const source = index * 4
-      if (hiddenClasses.has(Math.round(interleaved[source + 3]))) continue
-      const target = visibleIndex * 3
-      nextPositions[target] = interleaved[source]
-      nextPositions[target + 1] = interleaved[source + 2]
-      nextPositions[target + 2] = -interleaved[source + 1]
-      const rgb = hexToRgb(colorForClass(Math.round(interleaved[source + 3])))
-      nextColors.set(rgb, target)
-      visibleIndex += 1
+    const positions = [], colors = [], color = new Color()
+    for (let i = 0; i < points.length; i += 4) {
+      if (hiddenClasses.has(Math.round(points[i + 3])) || !inView(points[i], points[i + 1], view)) continue
+      positions.push(points[i], points[i + 2], -points[i + 1])
+      color.set(mode === 'height'
+        ? layerColor({ elevation: points[i + 2] }, 'elevation', [view.low, view.high])
+        : colorForClass(Math.round(points[i + 3])))
+      colors.push(color.r, color.g, color.b)
     }
-    return { positions: nextPositions, colors: nextColors }
-  }, [interleaved, hiddenClasses])
-
-  return (
-    <points>
-      <bufferGeometry>
-        <bufferAttribute attach="attributes-position" args={[positions, 3]} />
-        <bufferAttribute attach="attributes-color" args={[colors, 3]} />
-      </bufferGeometry>
-      <pointsMaterial size={0.14} sizeAttenuation vertexColors transparent opacity={0.9} />
-    </points>
-  )
+    return { positions: new Float32Array(positions), colors: new Float32Array(colors) }
+  }, [points, hiddenClasses, mode, view])
+  useLayoutEffect(() => { geometry.current.computeBoundingSphere() }, [positions])
+  return <points>
+    <bufferGeometry ref={geometry}>
+      <bufferAttribute attach="attributes-position" args={[positions, 3]} />
+      <bufferAttribute attach="attributes-color" args={[colors, 3]} />
+    </bufferGeometry>
+    <pointsMaterial size={pointSize} sizeAttenuation={false} vertexColors toneMapped={false}
+      onBeforeCompile={roundPoints} />
+  </points>
 }
 
-function GroundGrid() {
-  return (
-    <gridHelper args={[160, 32, '#23443e', '#142825']} position={[0, -3.3, 0]} />
-  )
-}
-
-function EgoMarker() {
-  return (
-    <group position={[0, -2.85, 0]}>
-      <mesh>
-        <boxGeometry args={[2.1, 0.4, 4.2]} />
-        <meshBasicMaterial color="#49dcb1" wireframe transparent opacity={0.8} />
-      </mesh>
-      <mesh position={[0, 0.1, -2.7]} rotation={[Math.PI / 2, 0, 0]}>
-        <coneGeometry args={[0.65, 1.5, 3]} />
-        <meshBasicMaterial color="#49dcb1" wireframe />
-      </mesh>
-    </group>
-  )
-}
-
-export default function PointCloud({ points, hiddenClasses, linked, focus, onFocusChange }) {
-  const controlsRef = useRef(null)
-
-  useEffect(() => {
-    if (!linked || !controlsRef.current) return
-    const target = controlsRef.current.target
-    if (Math.abs(target.x - focus.x) < 0.01 && Math.abs(target.z + focus.y) < 0.01) return
-    target.set(focus.x, -1, -focus.y)
-    controlsRef.current.update()
-  }, [focus, linked])
-
-  return (
-    <Canvas dpr={[1, 1.5]} gl={{ antialias: true, alpha: true }}>
-      <PerspectiveCamera makeDefault position={[36, 34, 58]} fov={46} />
-      <color attach="background" args={['#07100f']} />
-      <fog attach="fog" args={['#07100f', 90, 185]} />
-      <Cloud interleaved={points} hiddenClasses={hiddenClasses} />
-      <GroundGrid />
-      <EgoMarker />
-      <OrbitControls
-        ref={controlsRef}
-        makeDefault
-        enableDamping
-        dampingFactor={0.08}
-        target={[0, -1, 0]}
-        onChange={(event) => {
-          if (!linked) return
-          const target = event.target.target
-          onFocusChange({ x: target.x, y: -target.z })
-        }}
-      />
-      <GizmoHelper alignment="bottom-left" margin={[58, 58]}>
-        <GizmoViewport axisColors={['#ff6b47', '#49dcb1', '#4eb9ff']} labelColor="#d9e7e3" />
-      </GizmoHelper>
-    </Canvas>
-  )
+export default function PointCloud({ points, hiddenClasses, mode = 'semantic', topDown = false, view, pointSize = 1.8,
+  ego, playing, zoom, onZoomChange, captureRef }) {
+  return <Canvas frameloop="demand" dpr={[1, 2]} gl={{ antialias: true }}>
+    <color attach="background" args={['#040c16']} />
+    <SceneCamera {...{ view, topDown, zoom, onZoomChange }} />
+    <Cloud {...{ points, hiddenClasses, mode, view, pointSize }} />
+    <EgoVehicle {...{ ego, playing }} />
+    <CaptureView captureRef={captureRef} />
+    <gridHelper args={[Math.max(view.width, view.depth) * 1.4, 20, '#1d3d50', '#102232']}
+      position={[view.x, view.low - .3, -view.y]} />
+  </Canvas>
 }

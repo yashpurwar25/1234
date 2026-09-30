@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "test": "node --experimental-strip-types --test src/scene.test.js src/drivability.test.js src/ego.test.js",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"

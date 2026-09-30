@@ -22,6 +22,7 @@ GRID_FIELDS = (
     "occupancy",
     "traversability",
     "point_count",
+    "terrain_complexity",
 )
 
 

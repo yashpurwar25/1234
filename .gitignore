@@ -3,4 +3,5 @@ __pycache__/
 *.py[cod]
 dashboard/node_modules/
 dashboard/dist/
-
+models/
+.venv/

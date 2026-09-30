@@ -1,24 +1,30 @@
-# Grid Engine Dashboard
+# LiDAR-X Frontend
 
-Static React visualization of classified LiDAR points and their synchronized variable-resolution 2.5D grid projection.
-
-## Run
-
-From this directory:
+React, Three.js, and Canvas views for recorded and uploaded LiDAR scans.
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
-Create a production build with `npm run build`.
-
-## Rebuild frame assets
-
-From the repository root:
+Start the backend from the repository root:
 
 ```bash
-python3 convert_frames.py
+python3 -m uvicorn backend.app:app --port 8000
 ```
 
-The converter defaults to all 1,000 frames from `001000` through `001999`, exports at most 15,000 points per frame, and writes compact binary grids to `dashboard/public/frames`. Run `python3 convert_frames.py --help` for source, range, cadence, point-limit, and format options.
+Vite proxies `/api` to the backend. `npm run build` produces `dist`, which the
+backend serves at http://localhost:8000. See the root README for model installation,
+input formats, exports, and deployment.
+
+## Deployment env
+
+Set these for static hosting such as Vercel:
+
+```bash
+VITE_FRAME_MANIFEST_URL=https://huggingface.co/datasets/ranbyDipz/sih-lidar-clip/resolve/main/manifest.json
+VITE_API_BASE_URL=https://YOUR-BACKEND.example.com/api
+```
+
+`VITE_API_BASE_URL` is optional. If it is omitted, the recorded dataset still works
+and the upload flow is disabled in the UI.

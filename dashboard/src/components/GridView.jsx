@@ -1,165 +1,82 @@
-import { useEffect, useRef, useState } from 'react'
-import { colorForClass, nameForClass } from '../palette'
+import { useEffect, useRef } from 'react'
+import { layerColor } from '../palette'
+import { inView } from '../scene'
+import { DRIVABILITY_COLORS } from '../drivability'
+import { EGO_COLOR } from '../ego'
 
-export default function GridView({ cells, hiddenClasses, linked, focus, onFocusChange }) {
+export default function GridView({ cells, hiddenClasses, mode = 'semantic', boundaries = false, view, ego, zoom = 1, captureRef }) {
   const canvasRef = useRef(null)
-  const viewRef = useRef({ zoom: 1, focusX: 0, focusY: 0 })
-  const dragRef = useRef(null)
-  const transformRef = useRef(null)
-  const [hovered, setHovered] = useState(null)
-
   useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas || !cells.length) return undefined
-    const context = canvas.getContext('2d')
-
+    if (!captureRef) return
+    captureRef.current = () => new Promise((resolve, reject) => {
+      canvasRef.current.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not capture this map.')), 'image/png')
+    })
+    return () => { captureRef.current = null }
+  }, [captureRef])
+  useEffect(() => {
+    const canvas = canvasRef.current, context = canvas.getContext('2d')
     const draw = () => {
-      const bounds = cells.reduce(
-        (acc, cell) => ({
-          minX: Math.min(acc.minX, cell.x_min),
-          maxX: Math.max(acc.maxX, cell.x_max),
-          minY: Math.min(acc.minY, cell.y_min),
-          maxY: Math.max(acc.maxY, cell.y_max),
-        }),
-        { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity },
-      )
-      const dpr = Math.min(window.devicePixelRatio || 1, 2)
       const rect = canvas.getBoundingClientRect()
-      canvas.width = Math.round(rect.width * dpr)
-      canvas.height = Math.round(rect.height * dpr)
+      if (!rect.width || !rect.height) return
+      const dpr = Math.min(window.devicePixelRatio || 1, 2)
+      canvas.width = Math.round(rect.width * dpr); canvas.height = Math.round(rect.height * dpr)
       context.setTransform(dpr, 0, 0, dpr, 0, 0)
-      context.fillStyle = '#07100f'
+      context.fillStyle = mode === 'drivability' ? DRIVABILITY_COLORS.unknown : '#06111c'
       context.fillRect(0, 0, rect.width, rect.height)
-
-      const padding = 18
-      const baseScale = Math.min(
-        (rect.width - padding * 2) / (bounds.maxX - bounds.minX),
-        (rect.height - padding * 2) / (bounds.maxY - bounds.minY),
-      )
-      const view = viewRef.current
-      const scale = baseScale * view.zoom
-      const originX = rect.width / 2 - (view.focusX - bounds.minX) * scale
-      const originY = rect.height / 2 - (bounds.maxY - view.focusY) * scale
-      transformRef.current = { bounds, scale, originX, originY }
-
-      for (const cell of cells) {
-        if (hiddenClasses.has(cell.semantic_class)) continue
-        const x = originX + (cell.x_min - bounds.minX) * scale
-        const y = originY + (bounds.maxY - cell.y_max) * scale
-        const width = Math.max(0.7, (cell.x_max - cell.x_min) * scale)
-        const height = Math.max(0.7, (cell.y_max - cell.y_min) * scale)
-        context.globalAlpha = 0.42 + Math.min(cell.semantic_confidence ?? 1, 1) * 0.55
-        context.fillStyle = colorForClass(cell.semantic_class)
-        context.fillRect(x, y, width, height)
+      const scale = zoom * Math.min((rect.width - 32) / view.width, (rect.height - 54) / view.depth)
+      const ox = rect.width / 2 - view.x * scale, oy = (rect.height - 18) / 2 + view.y * scale
+      context.strokeStyle = '#173043'; context.lineWidth = .5
+      const spacing = Math.max(5, 10 ** Math.floor(Math.log10(view.width / 4)))
+      for (let x = Math.ceil((view.x - view.width / 2) / spacing) * spacing; x <= view.x + view.width / 2; x += spacing) {
+        context.beginPath(); context.moveTo(ox + x * scale, 12); context.lineTo(ox + x * scale, rect.height - 28); context.stroke()
       }
-      context.globalAlpha = 1
-
-      const egoX = originX + (0 - bounds.minX) * scale
-      const egoY = originY + (bounds.maxY - 0) * scale
-      context.save()
-      context.translate(egoX, egoY)
-      context.rotate(Math.PI / 2)
-      context.beginPath()
-      context.moveTo(0, -9)
-      context.lineTo(6, 7)
-      context.lineTo(-6, 7)
-      context.closePath()
-      context.fillStyle = '#07100f'
-      context.fill()
-      context.strokeStyle = '#49dcb1'
-      context.lineWidth = 1.5
-      context.stroke()
-      context.restore()
-
-      const barLength = 10 * scale
-      const barX = 21
-      const barY = rect.height - 28
-      context.strokeStyle = '#b3c9c3'
-      context.lineWidth = 1
-      context.beginPath()
-      context.moveTo(barX, barY - 4)
-      context.lineTo(barX, barY)
-      context.lineTo(barX + barLength, barY)
-      context.lineTo(barX + barLength, barY - 4)
-      context.stroke()
-      context.fillStyle = '#78908a'
-      context.font = '9px Courier New'
-      context.fillText('10 METERS', barX, barY - 8)
+      for (let y = Math.ceil((view.y - view.depth / 2) / spacing) * spacing; y <= view.y + view.depth / 2; y += spacing) {
+        context.beginPath(); context.moveTo(12, oy - y * scale); context.lineTo(rect.width - 12, oy - y * scale); context.stroke()
+      }
+      for (const c of cells) {
+        if (hiddenClasses.has(c.semantic_class) || !inView((c.x_min + c.x_max) / 2, (c.y_min + c.y_max) / 2, view)) continue
+        context.fillStyle = layerColor(c, mode, [view.low, view.high])
+        const x = ox + c.x_min * scale, y = oy - c.y_max * scale
+        const w = Math.max(1 / dpr, (c.x_max - c.x_min) * scale)
+        const h = Math.max(1 / dpr, (c.y_max - c.y_min) * scale)
+        context.fillRect(x, y, w, h)
+        if (boundaries && w > 3) {
+          context.strokeStyle = '#06102099'; context.lineWidth = .55
+          context.strokeRect(x, y, w, h)
+        }
+      }
+      if (ego && inView(ego.x, ego.y, view)) {
+        const x = ox + ego.x * scale, y = oy - ego.y * scale
+        const length = Math.max(12, 4.3 * scale), width = Math.max(7, 1.8 * scale)
+        context.strokeStyle = EGO_COLOR; context.lineWidth = 1.5
+        context.beginPath(); context.arc(x, y, Math.max(11, 2.9 * scale), 0, Math.PI * 2); context.stroke()
+        context.fillStyle = EGO_COLOR; context.fillRect(x - length / 2, y - width / 2, length, width)
+        context.strokeStyle = '#ffffff'; context.strokeRect(x - length / 2, y - width / 2, length, width)
+        context.fillStyle = '#092633'; context.fillRect(x - length * .3, y - width * .34, length * .5, width * .68)
+        context.fillStyle = '#ffffff'
+        context.beginPath(); context.moveTo(x + length / 2 + 7, y)
+        context.lineTo(x + length / 2 + 2, y - 4); context.lineTo(x + length / 2 + 2, y + 4); context.fill()
+        context.font = 'bold 10px monospace'; context.textAlign = 'center'
+        context.fillStyle = '#06242b'; context.fillRect(x - 17, y - width / 2 - 18, 34, 14)
+        context.fillStyle = EGO_COLOR; context.fillText('EGO', x, y - width / 2 - 7)
+        context.textAlign = 'left'
+      }
+      const rawScale = 50 / scale, magnitude = 10 ** Math.floor(Math.log10(rawScale))
+      const distance = [1, 2, 5, 10].find(n => n * magnitude >= rawScale) * magnitude
+      const bar = distance * scale
+      context.fillStyle = '#06111ce8'; context.fillRect(8, rect.height - 38, bar + 20, 30)
+      context.fillStyle = '#c5dce9'; context.font = '10px monospace'
+      context.fillText(`${Number(distance.toPrecision(3))} m`, 14, rect.height - 23)
+      context.fillRect(14, rect.height - 16, bar, 1)
+      context.fillRect(14, rect.height - 19, 1, 6); context.fillRect(14 + bar, rect.height - 19, 1, 6)
+      context.textAlign = 'right'; context.fillStyle = '#8ab4ce'
+      context.fillText('Y +', rect.width - 14, 21); context.fillText('X +', rect.width - 14, 35)
+      context.textAlign = 'left'
+      if (!cells.length) { context.fillStyle = '#8ab4ce'; context.fillText('No labeled cells', 20, rect.height / 2) }
     }
-
     const observer = new ResizeObserver(draw)
-    observer.observe(canvas)
-    draw()
-    canvas.drawGrid = draw
+    observer.observe(canvas); draw()
     return () => observer.disconnect()
-  }, [cells, hiddenClasses])
-
-  useEffect(() => {
-    if (!linked) return
-    viewRef.current.focusX = focus.x
-    viewRef.current.focusY = focus.y
-    canvasRef.current?.drawGrid?.()
-  }, [focus, linked])
-
-  const cellAt = (event) => {
-    const transform = transformRef.current
-    if (!transform) return null
-    const rect = canvasRef.current.getBoundingClientRect()
-    const screenX = event.clientX - rect.left
-    const screenY = event.clientY - rect.top
-    const worldX = transform.bounds.minX + (screenX - transform.originX) / transform.scale
-    const worldY = transform.bounds.maxY - (screenY - transform.originY) / transform.scale
-    return cells.findLast?.(
-      (cell) => worldX >= cell.x_min && worldX <= cell.x_max && worldY >= cell.y_min && worldY <= cell.y_max,
-    ) ?? cells.find(
-      (cell) => worldX >= cell.x_min && worldX <= cell.x_max && worldY >= cell.y_min && worldY <= cell.y_max,
-    )
-  }
-
-  const onPointerMove = (event) => {
-    if (dragRef.current) {
-      const view = viewRef.current
-      const transform = transformRef.current
-      view.focusX = dragRef.current.focusX - (event.clientX - dragRef.current.x) / transform.scale
-      view.focusY = dragRef.current.focusY + (event.clientY - dragRef.current.y) / transform.scale
-      canvasRef.current.drawGrid?.()
-      if (linked) onFocusChange({ x: view.focusX, y: view.focusY })
-      setHovered(null)
-      return
-    }
-    const cell = cellAt(event)
-    const rect = canvasRef.current.getBoundingClientRect()
-    setHovered(cell ? { cell, x: event.clientX - rect.left, y: event.clientY - rect.top } : null)
-  }
-
-  const onWheel = (event) => {
-    event.preventDefault()
-    viewRef.current.zoom = Math.max(0.55, Math.min(8, viewRef.current.zoom * Math.exp(-event.deltaY * 0.001)))
-    canvasRef.current.drawGrid?.()
-  }
-
-  return (
-    <div className="grid-wrap">
-      <canvas
-        ref={canvasRef}
-        onPointerDown={(event) => {
-          event.currentTarget.setPointerCapture(event.pointerId)
-          dragRef.current = { x: event.clientX, y: event.clientY, ...viewRef.current }
-        }}
-        onPointerUp={() => { dragRef.current = null }}
-        onPointerLeave={() => { dragRef.current = null; setHovered(null) }}
-        onPointerMove={onPointerMove}
-        onWheel={onWheel}
-      />
-      {hovered && (
-        <div className="cell-tooltip" style={{ left: hovered.x + 14, top: hovered.y + 14 }}>
-          <strong>{nameForClass(hovered.cell.semantic_class)}</strong>
-          <span>{hovered.cell.resolution} m cell</span>
-          <span>Elevation {hovered.cell.elevation.toFixed(2)} m</span>
-          <span>Traversability {(hovered.cell.traversability * 100).toFixed(0)}%</span>
-        </div>
-      )}
-      <div className="canvas-hint">DRAG TO PAN · SCROLL TO ZOOM</div>
-    </div>
-  )
+  }, [cells, hiddenClasses, mode, boundaries, view, ego, zoom])
+  return <canvas className="map-canvas" ref={canvasRef} aria-label={`${mode} top-down map`} />
 }
